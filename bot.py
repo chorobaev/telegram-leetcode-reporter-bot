@@ -388,7 +388,7 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
         report_data[display_name].append((difficulty, title, slug))
 
     # title_prefix жана date_str параметрлерин колдонуу
-    message = f"<b>{title_prefix} ({date_str}) жаңы чечилген маселелер:</b>\n"
+    message = f"<b>{date_str}: {title_prefix} чечилген маселелер:</b>\n"
 
     for display_name, submissions in report_data.items():
         message += f"\n<b>{display_name}</b>:\n"
@@ -522,7 +522,7 @@ def main():
     job_queue.run_repeating(check_for_updates, interval=CHECK_INTERVAL_SECONDS, first=10)
 
     # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 15:00)
-    report_time = datetime.time(hour=15, minute=0, tzinfo=datetime.timezone.utc)
+    report_time = datetime.time(hour=13, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(send_daily_report, time=report_time)
 
     # 3. Тазалоочу жумуш (күн сайын UTC 16:00, отчеттон кийин)
