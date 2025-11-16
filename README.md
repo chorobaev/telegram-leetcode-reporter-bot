@@ -1,7 +1,3 @@
-Here is the `README.md` file with standard Markdown formatting.
-
------
-
 # LeetCode Telegram Reporter Bot
 
 A simple but powerful Telegram bot that tracks LeetCode submissions for a list of users and posts daily reports in a group chat.
