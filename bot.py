@@ -16,7 +16,7 @@ except ImportError:
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DB_NAME = "leetcode_bot.db"
-CHECK_INTERVAL_SECONDS = 1800  # 1800 seconds = 30 minutes
+CHECK_INTERVAL_SECONDS = 3600  # 3600 seconds = 1 hour
 
 if not TELEGRAM_BOT_TOKEN:
     print("!!! ERROR: TELEGRAM_BOT_TOKEN environment variable not set.")
@@ -231,7 +231,7 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
     logging.info(f"Manual TODAY report triggered by {update.message.from_user.username}")
     await update.message.reply_text(
         "Бүгүнкү (UTC) отчет даярдалууда...\n"
-        "(Маалымат 30 мүнөткө чейин кечигиши мүмкүн, анткени маалыматтар мезгил-мезгили менен чогултулат)"
+        "Маалымат 1 саатка чейин кечигиши мүмкүн, анткени маалыматтар мезгил-мезгили менен чогултулат."
     )
 
     # Бүгүнкү датаны эсептөө
@@ -252,7 +252,7 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
 async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
     """
     Бул эми **ҮНСҮЗ МААЛЫМАТ ЧОГУЛТУУЧУ**.
-    Ар 30 мүнөт сайын иштеп, "бүгүн" чечилген жаңы маселелерди таап,
+    Ар 1 саат сайын иштеп, "бүгүн" чечилген жаңы маселелерди таап,
     аларды `posted_today` жана `problem_info` таблицаларына сактайт.
     ЭЧ КАНДАЙ БИЛДИРҮҮ ЖӨНӨТПӨЙТ.
     """
@@ -518,7 +518,7 @@ def main():
     # --- NEW/MODIFIED JOB SCHEDULING ---
     job_queue = application.job_queue
 
-    # 1. Маалымат чогултуучу жумуш (ар 30 мүнөт)
+    # 1. Маалымат чогултуучу жумуш (ар саат)
     job_queue.run_repeating(check_for_updates, interval=CHECK_INTERVAL_SECONDS, first=10)
 
     # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 15:00)
