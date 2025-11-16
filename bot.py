@@ -391,11 +391,11 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
     message = f"<b>{title_prefix} ({date_str}) жаңы чечилген маселелер:</b>\n"
 
     for display_name, submissions in report_data.items():
-        message += f"\n👤 <b>{display_name}</b>:\n"
+        message += f"\n<b>{display_name}</b>:\n"
         for (difficulty, title, slug) in submissions:
             problem_url = f"https://leetcode.com/problems/{slug}/"
             diff_icon = "🟢" if difficulty == "Easy" else "🟠" if difficulty == "Medium" else "🔴"
-            message += f"  {diff_icon} <a href='{problem_url}'>{title}</a>)\n"
+            message += f"   {diff_icon} <a href='{problem_url}'>{title}</a>\n"
 
     # 5. Билдирүүнү жөнөтүү
     try:
