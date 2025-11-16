@@ -522,7 +522,7 @@ def main():
     job_queue.run_repeating(check_for_updates, interval=CHECK_INTERVAL_SECONDS, first=10)
 
     # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 15:00)
-    report_time = datetime.time(hour=13, minute=0, tzinfo=datetime.timezone.utc)
+    report_time = datetime.time(hour=11, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(send_daily_report, time=report_time)
 
     # 3. Тазалоочу жумуш (күн сайын UTC 16:00, отчеттон кийин)
