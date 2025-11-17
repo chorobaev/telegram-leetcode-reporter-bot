@@ -515,24 +515,23 @@ def main():
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # --- NEW/MODIFIED JOB SCHEDULING ---
+    # --- JOB SCHEDULING ---
     job_queue = application.job_queue
 
     # 1. Маалымат чогултуучу жумуш (ар саат)
     job_queue.run_repeating(check_for_updates, interval=CHECK_INTERVAL_SECONDS, first=10)
 
-    # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 15:00)
-    report_time = datetime.time(hour=11, minute=0, tzinfo=datetime.timezone.utc)
+    # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 7:00)
+    report_time = datetime.time(hour=7, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(send_daily_report, time=report_time)
 
-    # 3. Тазалоочу жумуш (күн сайын UTC 16:00, отчеттон кийин)
-    cleanup_time = datetime.time(hour=16, minute=0, tzinfo=datetime.timezone.utc)
+    # 3. Тазалоочу жумуш (күн сайын UTC 9:00, отчеттон кийин)
+    cleanup_time = datetime.time(hour=9, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(clear_daily_log, time=cleanup_time)
 
     logging.info(f"Scheduled data collection every {CHECK_INTERVAL_SECONDS} seconds.")
     logging.info(f"Scheduled daily report for {report_time} UTC.")
     logging.info(f"Scheduled daily cleanup for {cleanup_time} UTC.")
-    # --- END NEW/MODIFIED ---
 
     # Команда handler'лерин каттоо (эч өзгөрүү жок)
     application.add_handler(CommandHandler("start", start_command))
