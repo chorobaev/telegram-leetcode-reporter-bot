@@ -409,15 +409,16 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
         display_with_streak = f"{display_name}{streak_label}"
 
         if solved_today:
-            solved_users.append((display_with_streak, submissions))
+            solved_users.append((display_with_streak, submissions, streak_value))
         else:
-            sleepers.append(display_with_streak)
+            sleepers.append((display_with_streak, streak_value))
 
     # title_prefix жана date_str параметрлерин колдонуу
     message_parts = []
     if solved_users:
+        solved_users.sort(key=lambda item: item[2], reverse=True)
         message = f"<b>{date_str}: Азаматтар</b>\n"
-        for display_name, submissions in solved_users:
+        for display_name, submissions, _streak_value in solved_users:
             message += f"\n<b>{display_name}</b>:\n"
             for (difficulty, title, slug) in submissions:
                 problem_url = f"https://leetcode.com/problems/{slug}/"
@@ -426,8 +427,9 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
         message_parts.append(message)
 
     if sleepers:
-        message = f"<b>{date_str}: Уктап калгандар:</b>\n"
-        for display_name in sleepers:
+        sleepers.sort(key=lambda item: item[1])
+        message = f"<b>{date_str}: Уктап калгандар</b>\n"
+        for display_name, _streak_value in sleepers:
             message += f"\n<b>{display_name}</b>\n"
         message_parts.append(message)
 
