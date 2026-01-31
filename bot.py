@@ -64,6 +64,15 @@ def init_db():
     )
     """)
 
+    # Table to store per-user streak info for reports
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_streaks (
+        leetcode_username TEXT PRIMARY KEY NOT NULL,
+        last_date TEXT NOT NULL,
+        streak_value INTEGER NOT NULL
+    )
+    """)
+
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
@@ -345,9 +354,19 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
 
     chat_id = group_result[0]
 
-    # 2. Берилген дата ('date_str') боюнча бардык маалыматты DB'ден алуу
+    # 2. Бардык колдонуучуларды алуу (тизме жана тартип үчүн керек)
+    cursor.execute("SELECT leetcode_username, display_name FROM tracked_users ORDER BY display_name")
+    tracked_users = cursor.fetchall()
+
+    if not tracked_users:
+        logging.info("Job: No tracked users. No report sent.")
+        conn.close()
+        return False
+
+    # 3. Берилген дата ('date_str') боюнча бардык маалыматты DB'ден алуу
     query = """
     SELECT
+        tu.leetcode_username,
         tu.display_name,
         pi.title,
         pi.difficulty,
@@ -367,38 +386,56 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
         conn.close()
         return False
 
-    if not results:
-        logging.info(f"Job: No submissions found for {date_str}. No report sent.")
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"{title_prefix} күндүн эсебине эчким маслеле чечкен жок. Айайай, уят эле :)",
-            )
-        except Exception as e:
-            logging.error(f"Job: Failed to send report to group {chat_id}: {e}")
-        conn.close()
-        return False  # Маалымат жок
-
     # 4. Билдирүүнү топтоо
     report_data = {}
+    for username, display_name in tracked_users:
+        report_data[username] = {
+            "display_name": display_name,
+            "submissions": []
+        }
+
     for row in results:
-        display_name, title, difficulty, slug = row
-        if display_name not in report_data:
-            report_data[display_name] = []
-        report_data[display_name].append((difficulty, title, slug))
+        username, display_name, title, difficulty, slug = row
+        report_data[username]["submissions"].append((difficulty, title, slug))
+
+    solved_users = []
+    sleepers = []
+
+    for username, display_name in tracked_users:
+        submissions = report_data[username]["submissions"]
+        solved_today = len(submissions) > 0
+        streak_value, show_streak = update_user_streak(cursor, username, date_str, solved_today)
+        streak_label = format_streak_label(streak_value) if show_streak else ""
+        display_with_streak = f"{display_name}{streak_label}"
+
+        if solved_today:
+            solved_users.append((display_with_streak, submissions))
+        else:
+            sleepers.append(display_with_streak)
 
     # title_prefix жана date_str параметрлерин колдонуу
-    message = f"<b>{date_str}: {title_prefix} чечилген маселелер:</b>\n"
+    message_parts = []
+    if solved_users:
+        message = f"<b>{date_str}: Азаматтар</b>\n"
+        for display_name, submissions in solved_users:
+            message += f"\n<b>{display_name}</b>:\n"
+            for (difficulty, title, slug) in submissions:
+                problem_url = f"https://leetcode.com/problems/{slug}/"
+                diff_icon = "🟢" if difficulty == "Easy" else "🟠" if difficulty == "Medium" else "🔴"
+                message += f"   {diff_icon} <a href='{problem_url}'>{title}</a>\n"
+        message_parts.append(message)
 
-    for display_name, submissions in report_data.items():
-        message += f"\n<b>{display_name}</b>:\n"
-        for (difficulty, title, slug) in submissions:
-            problem_url = f"https://leetcode.com/problems/{slug}/"
-            diff_icon = "🟢" if difficulty == "Easy" else "🟠" if difficulty == "Medium" else "🔴"
-            message += f"   {diff_icon} <a href='{problem_url}'>{title}</a>\n"
+    if sleepers:
+        message = f"<b>{date_str}: Уктап калгандар:</b>\n"
+        for display_name in sleepers:
+            message += f"\n<b>{display_name}</b>\n"
+        message_parts.append(message)
+
+    message = "\n".join(message_parts)
 
     # 5. Билдирүүнү жөнөтүү
     try:
+        conn.commit()
         await context.bot.send_message(
             chat_id=chat_id,
             text=message,
@@ -475,6 +512,52 @@ def get_or_fetch_problem_info(db_cursor, problem_slug: str) -> (str, str):
         return (difficulty, title)
     else:
         return ("N/A", problem_slug) # Эгер API иштебесе
+
+def format_streak_label(streak_value: int) -> str:
+    """Formats streak label for display."""
+    if streak_value > 0:
+        return f" (🔥 +{streak_value})"
+    return f" (❄️ {streak_value})"
+
+def update_user_streak(db_cursor, username: str, date_str: str, solved_today: bool) -> (int, bool):
+    """
+    Updates and returns user's streak for given date.
+    Returns (streak_value, show_streak_flag).
+    """
+    db_cursor.execute(
+        "SELECT last_date, streak_value FROM user_streaks WHERE leetcode_username = ?",
+        (username,)
+    )
+    existing = db_cursor.fetchone()
+    current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    if not existing:
+        new_streak = 1 if solved_today else -1
+        db_cursor.execute(
+            "INSERT INTO user_streaks (leetcode_username, last_date, streak_value) VALUES (?, ?, ?)",
+            (username, date_str, new_streak)
+        )
+        return new_streak, False
+
+    last_date_str, streak_value = existing
+    last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%d").date()
+    day_delta = (current_date - last_date).days
+
+    if day_delta <= 0:
+        return streak_value, True
+
+    if day_delta != 1:
+        new_streak = 1 if solved_today else -1
+    elif solved_today:
+        new_streak = streak_value + 1 if streak_value > 0 else 1
+    else:
+        new_streak = streak_value - 1 if streak_value < 0 else -1
+
+    db_cursor.execute(
+        "UPDATE user_streaks SET last_date = ?, streak_value = ? WHERE leetcode_username = ?",
+        (date_str, new_streak, username)
+    )
+    return new_streak, True
 
 def get_or_fetch_difficulty(db_cursor, problem_slug: str) -> str:
     """
