@@ -15,7 +15,7 @@ except ImportError:
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-DB_NAME = "leetcode_bot.db"
+DB_NAME = os.environ.get("DB_NAME", "leetcode_bot.db")
 CHECK_INTERVAL_SECONDS = 3600  # 3600 seconds = 1 hour
 
 if not TELEGRAM_BOT_TOKEN:
@@ -43,14 +43,25 @@ def init_db():
     )
     """)
 
+    # Table to store tracked users per group
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS group_tracked_users (
+        chat_id INTEGER NOT NULL,
+        leetcode_username TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        PRIMARY KEY (chat_id, leetcode_username)
+    )
+    """)
+
     # Table to log problems that have been posted for the day
     # This prevents duplicate posts if the script runs multiple times.
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS posted_today (
+        chat_id INTEGER NOT NULL,
         leetcode_username TEXT NOT NULL,
         problem_slug TEXT NOT NULL,
         date_posted TEXT NOT NULL,
-        PRIMARY KEY (leetcode_username, problem_slug, date_posted)
+        PRIMARY KEY (chat_id, leetcode_username, problem_slug, date_posted)
     )
     """)
 
@@ -73,9 +84,62 @@ def init_db():
     )
     """)
 
+    migrate_legacy_tables(cursor)
+
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
+
+def _table_exists(db_cursor, table_name: str) -> bool:
+    db_cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,)
+    )
+    return db_cursor.fetchone() is not None
+
+def _table_has_column(db_cursor, table_name: str, column_name: str) -> bool:
+    db_cursor.execute(f"PRAGMA table_info({table_name})")
+    return any(row[1] == column_name for row in db_cursor.fetchall())
+
+def migrate_legacy_tables(db_cursor):
+    """Migrates legacy tables/data to support per-group tracking."""
+    # Ensure posted_today has chat_id
+    if _table_exists(db_cursor, "posted_today") and not _table_has_column(db_cursor, "posted_today", "chat_id"):
+        db_cursor.execute("ALTER TABLE posted_today RENAME TO posted_today_legacy")
+        db_cursor.execute("""
+        CREATE TABLE posted_today (
+            chat_id INTEGER NOT NULL,
+            leetcode_username TEXT NOT NULL,
+            problem_slug TEXT NOT NULL,
+            date_posted TEXT NOT NULL,
+            PRIMARY KEY (chat_id, leetcode_username, problem_slug, date_posted)
+        )
+        """)
+        db_cursor.execute("SELECT chat_id FROM groups ORDER BY chat_id LIMIT 1")
+        group_row = db_cursor.fetchone()
+        if group_row:
+            db_cursor.execute("""
+            INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted)
+            SELECT ?, leetcode_username, problem_slug, date_posted
+            FROM posted_today_legacy
+            """, (group_row[0],))
+        db_cursor.execute("DROP TABLE posted_today_legacy")
+
+    # Migrate legacy tracked_users into the first registered group
+    db_cursor.execute("SELECT COUNT(*) FROM group_tracked_users")
+    has_group_users = db_cursor.fetchone()[0] > 0
+    if not has_group_users and _table_exists(db_cursor, "tracked_users"):
+        db_cursor.execute("SELECT chat_id FROM groups ORDER BY chat_id LIMIT 1")
+        group_row = db_cursor.fetchone()
+        if group_row:
+            chat_id = group_row[0]
+            db_cursor.execute("SELECT leetcode_username, display_name FROM tracked_users")
+            rows = db_cursor.fetchall()
+            if rows:
+                db_cursor.executemany(
+                    "INSERT OR IGNORE INTO group_tracked_users (chat_id, leetcode_username, display_name) VALUES (?, ?, ?)",
+                    [(chat_id, row[0], row[1]) for row in rows]
+                )
 
 # --- Bot Command Handlers ---
 
@@ -117,6 +181,7 @@ async def register_group_command(update: Update, context: ContextTypes.DEFAULT_T
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO groups (chat_id) VALUES (?)", (chat_id,))
+        migrate_legacy_tables(cursor)
         conn.commit()
         conn.close()
 
@@ -131,6 +196,10 @@ async def register_group_command(update: Update, context: ContextTypes.DEFAULT_T
 
 async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /add <username> command."""
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/add` inside your group, not in a private chat.")
+        return
+
     if len(context.args) < 2:
         await update.message.reply_text(
             "Usage: `/add <leetcode_username> <display_name>`\n"
@@ -145,9 +214,15 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM groups WHERE chat_id = ?", (update.message.chat_id,))
+        if not cursor.fetchone():
+            await update.message.reply_text("This group is not registered yet. Run `/register_group` first.")
+            conn.close()
+            return
+
         cursor.execute(
-            "INSERT OR IGNORE INTO tracked_users (leetcode_username, display_name) VALUES (?, ?)",
-            (username_to_add, display_name)
+            "INSERT OR IGNORE INTO group_tracked_users (chat_id, leetcode_username, display_name) VALUES (?, ?, ?)",
+            (update.message.chat_id, username_to_add, display_name)
         )
         conn.commit()
 
@@ -165,6 +240,10 @@ async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /remove <username> command."""
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/remove` inside your group, not in a private chat.")
+        return
+
     if not context.args:
         await update.message.reply_text("Usage: `/remove <leetcode_username>`\nExample: `/remove neal_wu`")
         return
@@ -174,7 +253,10 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM tracked_users WHERE leetcode_username = ?", (username_to_remove,))
+        cursor.execute(
+            "DELETE FROM group_tracked_users WHERE chat_id = ? AND leetcode_username = ?",
+            (update.message.chat_id, username_to_remove)
+        )
         conn.commit()
 
         if cursor.rowcount > 0:
@@ -191,10 +273,17 @@ async def remove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /list command."""
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/list` inside your group, not in a private chat.")
+        return
+
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT leetcode_username, display_name FROM tracked_users ORDER BY display_name")
+        cursor.execute(
+            "SELECT leetcode_username, display_name FROM group_tracked_users WHERE chat_id = ? ORDER BY display_name",
+            (update.message.chat_id,)
+        )
         users = cursor.fetchall()
         conn.close()
 
@@ -217,6 +306,23 @@ async def manual_send_report_command(update: Update, context: ContextTypes.DEFAU
     """
     Кечээки күндүн отчетун КОЛ МЕНЕН жөнөтүүнү баштайт.
     """
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/send_report` inside your group, not in a private chat.")
+        return
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM groups WHERE chat_id = ?", (update.message.chat_id,))
+        if not cursor.fetchone():
+            await update.message.reply_text("This group is not registered yet. Run `/register_group` first.")
+            conn.close()
+            return
+        conn.close()
+    except Exception as e:
+        await update.message.reply_text(f"Failed to verify group registration: {e}")
+        return
+
     logging.info(f"Manual YESTERDAY report triggered by {update.message.from_user.username}")
     await update.message.reply_text("Кечээки (UTC) отчет даярдалууда...")
 
@@ -226,7 +332,7 @@ async def manual_send_report_command(update: Update, context: ContextTypes.DEFAU
 
     try:
         # Негизги функцияны "Кечээки" деп чакыруу
-        sent = await generate_and_send_report(context, yesterday_utc_str, "Кечээки")
+        sent = await generate_and_send_report(context, update.message.chat_id, yesterday_utc_str, "Кечээки")
         if not sent:
             await update.message.reply_text("Кечээки күн үчүн чечилген маселелер табылган жок.")
     except Exception as e:
@@ -237,6 +343,23 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
     """
     Бүгүнкү күндүн отчетун КОЛ МЕНЕН жөнөтүүнү баштайт.
     """
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/send_today` inside your group, not in a private chat.")
+        return
+
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM groups WHERE chat_id = ?", (update.message.chat_id,))
+        if not cursor.fetchone():
+            await update.message.reply_text("This group is not registered yet. Run `/register_group` first.")
+            conn.close()
+            return
+        conn.close()
+    except Exception as e:
+        await update.message.reply_text(f"Failed to verify group registration: {e}")
+        return
+
     logging.info(f"Manual TODAY report triggered by {update.message.from_user.username}")
     await update.message.reply_text(
         "Бүгүнкү (UTC) отчет даярдалууда...\n"
@@ -249,7 +372,7 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
 
     try:
         # Негизги функцияны "Бүгүнкү" деп чакыруу
-        sent = await generate_and_send_report(context, today_utc_str, "Бүгүнкү")
+        sent = await generate_and_send_report(context, update.message.chat_id, today_utc_str, "Бүгүнкү")
         if not sent:
             await update.message.reply_text("Бүгүнкү күн үчүн чечилген маселелер азырынча табылган жок.")
     except Exception as e:
@@ -269,72 +392,82 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # 1. Көзөмөлдөнгөн колдонуучуларды алуу
-    cursor.execute("SELECT leetcode_username, display_name FROM tracked_users")
-    users = cursor.fetchall()
-
-    if not users:
-        logging.info("Job: No users to track. Skipping collection.")
+    # 1. Бардык группаларды алуу
+    cursor.execute("SELECT chat_id FROM groups")
+    groups = cursor.fetchall()
+    if not groups:
+        logging.info("Job: No groups registered. Skipping collection.")
         conn.close()
         return
 
     # 2. "Бүгүн" (UTC) датасын аныктоо
     today_utc_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
 
-    for user_row in users:
-        username = user_row[0]
-        logging.info(f"Job: Collecting data for user {username}...")
+    for (chat_id,) in groups:
+        cursor.execute(
+            "SELECT leetcode_username, display_name FROM group_tracked_users WHERE chat_id = ?",
+            (chat_id,)
+        )
+        users = cursor.fetchall()
 
-        try:
-            submissions = fetch_recent_submissions(username, limit=15)
-            if submissions is None:
-                continue
+        if not users:
+            logging.info(f"Job: No users to track for group {chat_id}.")
+            continue
 
-            for sub in submissions:
-                # 3. Тапшырма "бүгүн" чечилгенин текшерүү
-                timestamp = int(sub['timestamp'])
-                submit_time_utc = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
-                submit_date_str = submit_time_utc.strftime('%Y-%m-%d')
+        for user_row in users:
+            username = user_row[0]
+            logging.info(f"Job: Collecting data for user {username} (group {chat_id})...")
 
-                if submit_date_str != today_utc_str:
-                    # Эски тапшырма, бул колдонуучу үчүн токтотуу
-                    break
-
-                problem_slug = sub['titleSlug']
-
-                # 4. "Бүгүн" үчүн бул маселе мурда катталганын текшерүү
-                cursor.execute(
-                    "SELECT 1 FROM posted_today WHERE leetcode_username = ? AND problem_slug = ? AND date_posted = ?",
-                    (username, problem_slug, today_utc_str)
-                )
-                if cursor.fetchone():
-                    # Мурда катталган, кийинкиге өтүү
+            try:
+                submissions = fetch_recent_submissions(username, limit=15)
+                if submissions is None:
                     continue
 
-                # 5. Эгер жаңы болсо, кэшти толтуруу жана маалымат базасына каттоо
-                logging.info(f"Job: Found new submission for {username}: {problem_slug}")
+                for sub in submissions:
+                    # 3. Тапшырма "бүгүн" чечилгенин текшерүү
+                    timestamp = int(sub['timestamp'])
+                    submit_time_utc = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+                    submit_date_str = submit_time_utc.strftime('%Y-%m-%d')
 
-                # Маселенин маалыматын (аталышы/кыйынчылыгы) алып, кэшти толтуруу
-                # Бул кийинчерээк отчет үчүн керек
-                get_or_fetch_problem_info(cursor, problem_slug)
+                    if submit_date_str != today_utc_str:
+                        # Эски тапшырма, бул колдонуучу үчүн токтотуу
+                        break
 
-                # "posted_today" таблицасына каттоо
-                cursor.execute(
-                    "INSERT INTO posted_today (leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?)",
-                    (username, problem_slug, today_utc_str)
-                )
+                    problem_slug = sub['titleSlug']
 
-            conn.commit() # Ар бир колдонуучудан кийин сактоо
+                    # 4. "Бүгүн" үчүн бул маселе мурда катталганын текшерүү
+                    cursor.execute(
+                        "SELECT 1 FROM posted_today WHERE chat_id = ? AND leetcode_username = ? AND problem_slug = ? AND date_posted = ?",
+                        (chat_id, username, problem_slug, today_utc_str)
+                    )
+                    if cursor.fetchone():
+                        # Мурда катталган, кийинкиге өтүү
+                        continue
 
-        except Exception as e:
-            logging.error(f"Job: Error during data collection for {username}: {e}")
-            conn.rollback() # Ката болсо, бул колдонуучунун өзгөрүүлөрүн артка кайтаруу
-            continue
+                    # 5. Эгер жаңы болсо, кэшти толтуруу жана маалымат базасына каттоо
+                    logging.info(f"Job: Found new submission for {username} (group {chat_id}): {problem_slug}")
+
+                    # Маселенин маалыматын (аталышы/кыйынчылыгы) алып, кэшти толтуруу
+                    # Бул кийинчерээк отчет үчүн керек
+                    get_or_fetch_problem_info(cursor, problem_slug)
+
+                    # "posted_today" таблицасына каттоо
+                    cursor.execute(
+                        "INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?, ?)",
+                        (chat_id, username, problem_slug, today_utc_str)
+                    )
+
+                conn.commit() # Ар бир колдонуучудан кийин сактоо
+
+            except Exception as e:
+                logging.error(f"Job: Error during data collection for {username} (group {chat_id}): {e}")
+                conn.rollback() # Ката болсо, бул колдонуучунун өзгөрүүлөрүн артка кайтаруу
+                continue
 
     conn.close()
     logging.info("Job: DATA COLLECTION finished.")
 
-async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str: str, title_prefix: str) -> bool:
+async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_str: str, title_prefix: str) -> bool:
     """
     Берилген UTC датасы үчүн отчет түзүп, группага жөнөтөт.
     Маалымат табылса 'True', табылбаса 'False' кайтарат.
@@ -343,19 +476,11 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # 1. Группанын ID'син алуу
-    cursor.execute("SELECT chat_id FROM groups LIMIT 1")
-    group_result = cursor.fetchone()
-
-    if not group_result:
-        logging.warning("Job: No group registered. Cannot send report.")
-        conn.close()
-        return False
-
-    chat_id = group_result[0]
-
-    # 2. Бардык колдонуучуларды алуу (тизме жана тартип үчүн керек)
-    cursor.execute("SELECT leetcode_username, display_name FROM tracked_users ORDER BY display_name")
+    # 1. Бардык колдонуучуларды алуу (тизме жана тартип үчүн керек)
+    cursor.execute(
+        "SELECT leetcode_username, display_name FROM group_tracked_users WHERE chat_id = ? ORDER BY display_name",
+        (chat_id,)
+    )
     tracked_users = cursor.fetchall()
 
     if not tracked_users:
@@ -366,20 +491,20 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, date_str:
     # 3. Берилген дата ('date_str') боюнча бардык маалыматты DB'ден алуу
     query = """
     SELECT
-        tu.leetcode_username,
-        tu.display_name,
+        gtu.leetcode_username,
+        gtu.display_name,
         pi.title,
         pi.difficulty,
         pi.problem_slug
     FROM posted_today AS pt
-    JOIN tracked_users AS tu ON pt.leetcode_username = tu.leetcode_username
+    JOIN group_tracked_users AS gtu ON pt.chat_id = gtu.chat_id AND pt.leetcode_username = gtu.leetcode_username
     JOIN problem_info AS pi ON pt.problem_slug = pi.problem_slug
-    WHERE pt.date_posted = ?
-    ORDER BY tu.display_name, pi.difficulty
+    WHERE pt.date_posted = ? AND pt.chat_id = ?
+    ORDER BY gtu.display_name, pi.difficulty
     """
 
     try:
-        cursor.execute(query, (date_str,))
+        cursor.execute(query, (date_str, chat_id))
         results = cursor.fetchall()
     except Exception as e:
         logging.error(f"Job: Failed to query database for report: {e}")
@@ -463,8 +588,15 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     yesterday_utc = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
     yesterday_utc_str = yesterday_utc.strftime('%Y-%m-%d')
 
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM groups")
+    groups = cursor.fetchall()
+    conn.close()
+
     # Негизги функцияны "Кечээки" деп чакыруу
-    await generate_and_send_report(context, yesterday_utc_str, "Кечээки")
+    for (chat_id,) in groups:
+        await generate_and_send_report(context, chat_id, yesterday_utc_str, "Кечээки")
 
 async def clear_daily_log(context: ContextTypes.DEFAULT_TYPE):
     """
