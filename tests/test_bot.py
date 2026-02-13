@@ -229,6 +229,38 @@ class TestCommandHandlers(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
         reply_text = update.message.reply_text.await_args.args[0]
         self.assertIn("not registered yet", reply_text)
 
+    async def test_manual_send_report_does_not_update_streaks(self):
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO groups (chat_id) VALUES (?)", (7001,))
+            conn.commit()
+
+        update = make_update(chat_id=7001, chat_type="group")
+
+        with patch(
+            "bot.generate_and_send_report", new=AsyncMock(return_value=True)
+        ) as report_mock:
+            await bot.manual_send_report_command(update, SimpleNamespace())
+
+        report_mock.assert_awaited_once()
+        self.assertFalse(report_mock.await_args.kwargs["update_streaks"])
+
+    async def test_manual_send_today_does_not_update_streaks(self):
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO groups (chat_id) VALUES (?)", (7002,))
+            conn.commit()
+
+        update = make_update(chat_id=7002, chat_type="group")
+
+        with patch(
+            "bot.generate_and_send_report", new=AsyncMock(return_value=True)
+        ) as report_mock:
+            await bot.manual_send_today_command(update, SimpleNamespace())
+
+        report_mock.assert_awaited_once()
+        self.assertFalse(report_mock.await_args.kwargs["update_streaks"])
+
 
 class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
     async def test_check_for_updates_inserts_only_new_todays_submissions(self):
@@ -311,6 +343,48 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
             streak_row = cursor.fetchone()
 
         self.assertEqual(streak_row, (report_date, 1))
+
+    async def test_generate_report_can_skip_streak_mutation(self):
+        report_date = "2026-02-10"
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO group_tracked_users (chat_id, leetcode_username, display_name) VALUES (?, ?, ?)",
+                (1, "alice", "Alice"),
+            )
+            cursor.execute(
+                "INSERT INTO problem_info (problem_slug, difficulty, title) VALUES (?, ?, ?)",
+                ("two-sum", "Easy", "Two Sum"),
+            )
+            cursor.execute(
+                "INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?, ?)",
+                (1, "alice", "two-sum", report_date),
+            )
+            cursor.execute(
+                "INSERT INTO user_streaks (leetcode_username, last_date, streak_value) VALUES (?, ?, ?)",
+                ("alice", "2026-02-09", 5),
+            )
+            conn.commit()
+
+        send_message_mock = AsyncMock()
+        context = SimpleNamespace(bot=SimpleNamespace(send_message=send_message_mock))
+
+        result = await bot.generate_and_send_report(
+            context, 1, report_date, "Today", update_streaks=False
+        )
+
+        self.assertTrue(result)
+        send_message_mock.assert_awaited_once()
+
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT last_date, streak_value FROM user_streaks WHERE leetcode_username = ?",
+                ("alice",),
+            )
+            streak_row = cursor.fetchone()
+
+        self.assertEqual(streak_row, ("2026-02-09", 5))
 
     async def test_generate_report_with_solved_user_sends_problem_links(self):
         report_date = "2026-02-10"

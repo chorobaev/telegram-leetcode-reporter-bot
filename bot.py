@@ -332,7 +332,13 @@ async def manual_send_report_command(update: Update, context: ContextTypes.DEFAU
 
     try:
         # Негизги функцияны "Кечээки" деп чакыруу
-        sent = await generate_and_send_report(context, update.message.chat_id, yesterday_utc_str, "Кечээки")
+        sent = await generate_and_send_report(
+            context,
+            update.message.chat_id,
+            yesterday_utc_str,
+            "Кечээки",
+            update_streaks=False
+        )
         if not sent:
             await update.message.reply_text("Кечээки күн үчүн чечилген маселелер табылган жок.")
     except Exception as e:
@@ -372,7 +378,13 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
 
     try:
         # Негизги функцияны "Бүгүнкү" деп чакыруу
-        sent = await generate_and_send_report(context, update.message.chat_id, today_utc_str, "Бүгүнкү")
+        sent = await generate_and_send_report(
+            context,
+            update.message.chat_id,
+            today_utc_str,
+            "Бүгүнкү",
+            update_streaks=False
+        )
         if not sent:
             await update.message.reply_text("Бүгүнкү күн үчүн чечилген маселелер азырынча табылган жок.")
     except Exception as e:
@@ -467,9 +479,16 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     logging.info("Job: DATA COLLECTION finished.")
 
-async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, chat_id: int, date_str: str, title_prefix: str) -> bool:
+async def generate_and_send_report(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    date_str: str,
+    title_prefix: str,
+    update_streaks: bool = True
+) -> bool:
     """
     Берилген UTC датасы үчүн отчет түзүп, группага жөнөтөт.
+    update_streaks=False болсо streak эсептери өзгөртүлбөйт.
     Маалымат табылса 'True', табылбаса 'False' кайтарат.
     """
     logging.info(f"Job: Generating report for date: {date_str}")
@@ -530,14 +549,19 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         submissions = report_data[username]["submissions"]
         solved_in_group = len(submissions) > 0
 
-        # Streaks are global per user, so check whether the user solved on this date
-        # in any tracked group before updating user_streaks.
-        cursor.execute(
-            "SELECT 1 FROM posted_today WHERE leetcode_username = ? AND date_posted = ? LIMIT 1",
-            (username, date_str)
-        )
-        solved_anywhere_today = cursor.fetchone() is not None
-        streak_value, show_streak = update_user_streak(cursor, username, date_str, solved_anywhere_today)
+        if update_streaks:
+            # Streaks are global per user, so check whether the user solved on this date
+            # in any tracked group before updating user_streaks.
+            cursor.execute(
+                "SELECT 1 FROM posted_today WHERE leetcode_username = ? AND date_posted = ? LIMIT 1",
+                (username, date_str)
+            )
+            solved_anywhere_today = cursor.fetchone() is not None
+            streak_value, show_streak = update_user_streak(
+                cursor, username, date_str, solved_anywhere_today
+            )
+        else:
+            streak_value, show_streak = get_current_user_streak(cursor, username)
         streak_label = format_streak_label(streak_value) if show_streak else ""
         display_with_streak = f"{display_name}{streak_label}"
 
@@ -660,6 +684,20 @@ def format_streak_label(streak_value: int) -> str:
     if streak_value > 0:
         return f" (🔥 +{streak_value})"
     return f" (❄️ {streak_value})"
+
+def get_current_user_streak(db_cursor, username: str) -> (int, bool):
+    """
+    Returns the current stored streak without mutating user_streaks.
+    Returns (streak_value, show_streak_flag).
+    """
+    db_cursor.execute(
+        "SELECT streak_value FROM user_streaks WHERE leetcode_username = ?",
+        (username,)
+    )
+    row = db_cursor.fetchone()
+    if not row:
+        return 0, False
+    return row[0], True
 
 def update_user_streak(db_cursor, username: str, date_str: str, solved_today: bool) -> (int, bool):
     """
