@@ -528,12 +528,20 @@ async def generate_and_send_report(context: ContextTypes.DEFAULT_TYPE, chat_id: 
 
     for username, display_name in tracked_users:
         submissions = report_data[username]["submissions"]
-        solved_today = len(submissions) > 0
-        streak_value, show_streak = update_user_streak(cursor, username, date_str, solved_today)
+        solved_in_group = len(submissions) > 0
+
+        # Streaks are global per user, so check whether the user solved on this date
+        # in any tracked group before updating user_streaks.
+        cursor.execute(
+            "SELECT 1 FROM posted_today WHERE leetcode_username = ? AND date_posted = ? LIMIT 1",
+            (username, date_str)
+        )
+        solved_anywhere_today = cursor.fetchone() is not None
+        streak_value, show_streak = update_user_streak(cursor, username, date_str, solved_anywhere_today)
         streak_label = format_streak_label(streak_value) if show_streak else ""
         display_with_streak = f"{display_name}{streak_label}"
 
-        if solved_today:
+        if solved_in_group:
             solved_users.append((display_with_streak, submissions, streak_value))
         else:
             sleepers.append((display_with_streak, streak_value))
