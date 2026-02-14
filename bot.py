@@ -717,7 +717,7 @@ def update_user_streak(db_cursor, username: str, date_str: str, solved_today: bo
             "INSERT INTO user_streaks (leetcode_username, last_date, streak_value) VALUES (?, ?, ?)",
             (username, date_str, new_streak)
         )
-        return new_streak, False
+        return new_streak, True
 
     last_date_str, streak_value = existing
     last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%d").date()

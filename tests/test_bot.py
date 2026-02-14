@@ -38,7 +38,7 @@ class DatabaseTestMixin:
 
 
 class TestStreakLogic(DatabaseTestMixin, unittest.TestCase):
-    def test_new_user_streak_created_with_hidden_label(self):
+    def test_new_user_streak_created_with_visible_label(self):
         with self.connect() as conn:
             cursor = conn.cursor()
             streak_value, show_label = bot.update_user_streak(
@@ -53,7 +53,7 @@ class TestStreakLogic(DatabaseTestMixin, unittest.TestCase):
             db_row = cursor.fetchone()
 
         self.assertEqual(streak_value, 1)
-        self.assertFalse(show_label)
+        self.assertTrue(show_label)
         self.assertEqual(db_row, ("2026-02-10", 1))
 
     def test_streak_advances_and_flips_to_negative_after_miss(self):
@@ -332,7 +332,7 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
         sent_text = send_message_mock.await_args.kwargs["text"]
         self.assertIn("Уктап калгандар", sent_text)
         self.assertNotIn("Азаматтар", sent_text)
-        self.assertIn("<b>Alice</b>", sent_text)
+        self.assertIn("<b>Alice (🔥 +1)</b>", sent_text)
 
         with self.connect() as conn:
             cursor = conn.cursor()
@@ -413,6 +413,7 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
         send_message_mock.assert_awaited_once()
         sent_text = send_message_mock.await_args.kwargs["text"]
         self.assertIn("Азаматтар", sent_text)
+        self.assertIn("<b>Bob (🔥 +1)</b>", sent_text)
         self.assertIn(
             "🟢 <a href='https://leetcode.com/problems/two-sum/'>Two Sum</a>",
             sent_text,
