@@ -89,6 +89,28 @@ class TestStreakLogic(DatabaseTestMixin, unittest.TestCase):
 
         self.assertEqual((reset_value, show_label), (-1, True))
 
+    def test_invalid_streak_date_self_heals_instead_of_crashing(self):
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO user_streaks (leetcode_username, last_date, streak_value) VALUES (?, ?, ?)",
+                ("alice", "$YESTERDAY_UTC", 12),
+            )
+
+            streak_value, show_label = bot.update_user_streak(
+                cursor, "alice", "2026-02-15", True
+            )
+            conn.commit()
+
+            cursor.execute(
+                "SELECT last_date, streak_value FROM user_streaks WHERE leetcode_username = ?",
+                ("alice",),
+            )
+            db_row = cursor.fetchone()
+
+        self.assertEqual((streak_value, show_label), (1, True))
+        self.assertEqual(db_row, ("2026-02-15", 1))
+
 
 class TestProblemInfoCache(DatabaseTestMixin, unittest.TestCase):
     def test_cache_hit_skips_api_fetch(self):
@@ -132,51 +154,6 @@ class TestProblemInfoCache(DatabaseTestMixin, unittest.TestCase):
                 result = bot.get_or_fetch_problem_info(cursor, "missing-problem")
 
         self.assertEqual(result, ("N/A", "missing-problem"))
-
-
-class TestMigrations(DatabaseTestMixin, unittest.TestCase):
-    def test_migrate_legacy_tables_moves_data_to_group_scope(self):
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO groups (chat_id) VALUES (?)", (77,))
-            cursor.execute(
-                "INSERT INTO tracked_users (leetcode_username, display_name) VALUES (?, ?)",
-                ("alice", "Alice"),
-            )
-
-            cursor.execute("DROP TABLE posted_today")
-            cursor.execute(
-                """
-                CREATE TABLE posted_today (
-                    leetcode_username TEXT NOT NULL,
-                    problem_slug TEXT NOT NULL,
-                    date_posted TEXT NOT NULL,
-                    PRIMARY KEY (leetcode_username, problem_slug, date_posted)
-                )
-                """
-            )
-            cursor.execute(
-                "INSERT INTO posted_today (leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?)",
-                ("alice", "two-sum", "2026-02-10"),
-            )
-
-            bot.migrate_legacy_tables(cursor)
-            conn.commit()
-
-            cursor.execute("PRAGMA table_info(posted_today)")
-            posted_today_columns = [row[1] for row in cursor.fetchall()]
-            cursor.execute(
-                "SELECT chat_id, leetcode_username, problem_slug, date_posted FROM posted_today"
-            )
-            posted_rows = cursor.fetchall()
-            cursor.execute(
-                "SELECT chat_id, leetcode_username, display_name FROM group_tracked_users"
-            )
-            group_rows = cursor.fetchall()
-
-        self.assertIn("chat_id", posted_today_columns)
-        self.assertEqual(posted_rows, [(77, "alice", "two-sum", "2026-02-10")])
-        self.assertEqual(group_rows, [(77, "alice", "Alice")])
 
 
 class TestCommandHandlers(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):

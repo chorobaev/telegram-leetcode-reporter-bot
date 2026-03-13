@@ -28,14 +28,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Table to store the LeetCode usernames to track
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tracked_users (
-        leetcode_username TEXT PRIMARY KEY NOT NULL,
-        display_name TEXT NOT NULL
-    )
-    """)
-
     # Table to store the group chat ID where updates should be posted
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS groups (
@@ -84,62 +76,9 @@ def init_db():
     )
     """)
 
-    migrate_legacy_tables(cursor)
-
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
-
-def _table_exists(db_cursor, table_name: str) -> bool:
-    db_cursor.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,)
-    )
-    return db_cursor.fetchone() is not None
-
-def _table_has_column(db_cursor, table_name: str, column_name: str) -> bool:
-    db_cursor.execute(f"PRAGMA table_info({table_name})")
-    return any(row[1] == column_name for row in db_cursor.fetchall())
-
-def migrate_legacy_tables(db_cursor):
-    """Migrates legacy tables/data to support per-group tracking."""
-    # Ensure posted_today has chat_id
-    if _table_exists(db_cursor, "posted_today") and not _table_has_column(db_cursor, "posted_today", "chat_id"):
-        db_cursor.execute("ALTER TABLE posted_today RENAME TO posted_today_legacy")
-        db_cursor.execute("""
-        CREATE TABLE posted_today (
-            chat_id INTEGER NOT NULL,
-            leetcode_username TEXT NOT NULL,
-            problem_slug TEXT NOT NULL,
-            date_posted TEXT NOT NULL,
-            PRIMARY KEY (chat_id, leetcode_username, problem_slug, date_posted)
-        )
-        """)
-        db_cursor.execute("SELECT chat_id FROM groups ORDER BY chat_id LIMIT 1")
-        group_row = db_cursor.fetchone()
-        if group_row:
-            db_cursor.execute("""
-            INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted)
-            SELECT ?, leetcode_username, problem_slug, date_posted
-            FROM posted_today_legacy
-            """, (group_row[0],))
-        db_cursor.execute("DROP TABLE posted_today_legacy")
-
-    # Migrate legacy tracked_users into the first registered group
-    db_cursor.execute("SELECT COUNT(*) FROM group_tracked_users")
-    has_group_users = db_cursor.fetchone()[0] > 0
-    if not has_group_users and _table_exists(db_cursor, "tracked_users"):
-        db_cursor.execute("SELECT chat_id FROM groups ORDER BY chat_id LIMIT 1")
-        group_row = db_cursor.fetchone()
-        if group_row:
-            chat_id = group_row[0]
-            db_cursor.execute("SELECT leetcode_username, display_name FROM tracked_users")
-            rows = db_cursor.fetchall()
-            if rows:
-                db_cursor.executemany(
-                    "INSERT OR IGNORE INTO group_tracked_users (chat_id, leetcode_username, display_name) VALUES (?, ?, ?)",
-                    [(chat_id, row[0], row[1]) for row in rows]
-                )
 
 # --- Bot Command Handlers ---
 
@@ -181,7 +120,6 @@ async def register_group_command(update: Update, context: ContextTypes.DEFAULT_T
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO groups (chat_id) VALUES (?)", (chat_id,))
-        migrate_legacy_tables(cursor)
         conn.commit()
         conn.close()
 
@@ -651,6 +589,10 @@ async def clear_daily_log(context: ContextTypes.DEFAULT_TYPE):
     finally:
         conn.close()
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Logs unexpected update/job exceptions through application handler."""
+    logging.error("Unhandled exception in update/job handler", exc_info=context.error)
+
 def get_or_fetch_problem_info(db_cursor, problem_slug: str) -> (str, str):
     """
     Маалымат базасынан маселенин маалыматын (кыйынчылык, аталышы) текшерет.
@@ -720,7 +662,22 @@ def update_user_streak(db_cursor, username: str, date_str: str, solved_today: bo
         return new_streak, True
 
     last_date_str, streak_value = existing
-    last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%d").date()
+    try:
+        last_date = datetime.datetime.strptime(last_date_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        # Self-heal legacy/corrupted date values (e.g. "$YESTERDAY_UTC")
+        logging.warning(
+            "Invalid streak date for user '%s': %r. Resetting streak from report date %s.",
+            username,
+            last_date_str,
+            date_str
+        )
+        new_streak = 1 if solved_today else -1
+        db_cursor.execute(
+            "UPDATE user_streaks SET last_date = ?, streak_value = ? WHERE leetcode_username = ?",
+            (date_str, new_streak, username)
+        )
+        return new_streak, True
     day_delta = (current_date - last_date).days
 
     if day_delta <= 0:
@@ -805,6 +762,7 @@ def main():
     application.add_handler(CommandHandler("list", list_users_command))
     application.add_handler(CommandHandler("send_report", manual_send_report_command))
     application.add_handler(CommandHandler("send_today", manual_send_today_command))
+    application.add_error_handler(error_handler)
 
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
