@@ -121,14 +121,14 @@ if __name__ == "__main__":
 
 def fetch_problem_difficulty(title_slug: str):
     """
-    Бир маселенин кыйынчылыгын (Easy, Medium, Hard) жана аталышын (title) тартат.
+    Fetches a problem's difficulty (Easy, Medium, Hard) and title.
 
     Args:
-        title_slug: Маселенин уникалдуу URL дареги (мис., "two-sum").
+        title_slug: The problem's unique URL slug (e.g., "two-sum").
 
     Returns:
-        ("Easy", "Two Sum") сыяктуу (difficulty, title) кортежи
-        же (None, None) (эгер ката кетсе).
+        A (difficulty, title) tuple like ("Easy", "Two Sum")
+        or (None, None) if an error occurs.
     """
     json_payload = {
         "query": QUESTION_DIFFICULTY_QUERY,
@@ -139,7 +139,7 @@ def fetch_problem_difficulty(title_slug: str):
 
     try:
         with requests.Session() as s:
-            # ... (headers ошол бойдон калат) ...
+            # ... (headers remain the same) ...
             s.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
                 "Referer": f"https://leetcode.com/problems/{title_slug}/"

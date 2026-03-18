@@ -254,7 +254,7 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def manual_send_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Кечээки күндүн отчетун КОЛ МЕНЕН жөнөтүүнү баштайт.
+    Starts manually sending the previous day's report.
     """
     if update.message.chat.type == "private":
         await update.message.reply_text("Please use `/send_report` inside your group, not in a private chat.")
@@ -276,12 +276,12 @@ async def manual_send_report_command(update: Update, context: ContextTypes.DEFAU
     logging.info(f"Manual YESTERDAY report triggered by {update.message.from_user.username}")
     await update.message.reply_text("Кечээки (UTC) отчет даярдалууда...")
 
-    # Кечээки датаны эсептөө
+    # Calculate yesterday's date
     yesterday_utc = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
     yesterday_utc_str = yesterday_utc.strftime('%Y-%m-%d')
 
     try:
-        # Негизги функцияны "Кечээки" деп чакыруу
+        # Call the main function with "Yesterday"
         sent = await generate_and_send_report(
             context,
             update.message.chat_id,
@@ -297,7 +297,7 @@ async def manual_send_report_command(update: Update, context: ContextTypes.DEFAU
 
 async def manual_send_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Бүгүнкү күндүн отчетун КОЛ МЕНЕН жөнөтүүнү баштайт.
+    Starts manually sending today's report.
     """
     if update.message.chat.type == "private":
         await update.message.reply_text("Please use `/send_today` inside your group, not in a private chat.")
@@ -322,12 +322,12 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
         "Маалымат 1 саатка чейин кечигиши мүмкүн, анткени маалыматтар мезгил-мезгили менен чогултулат."
     )
 
-    # Бүгүнкү датаны эсептөө
+    # Calculate today's date
     today_utc = datetime.datetime.now(datetime.timezone.utc)
     today_utc_str = today_utc.strftime('%Y-%m-%d')
 
     try:
-        # Негизги функцияны "Бүгүнкү" деп чакыруу
+        # Call the main function with "Today"
         sent = await generate_and_send_report(
             context,
             update.message.chat_id,
@@ -428,16 +428,16 @@ async def set_streak_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
     """
-    Бул эми **ҮНСҮЗ МААЛЫМАТ ЧОГУЛТУУЧУ**.
-    Ар 1 саат сайын иштеп, "бүгүн" чечилген жаңы маселелерди таап,
-    аларды `posted_today` жана `problem_info` таблицаларына сактайт.
-    ЭЧ КАНДАЙ БИЛДИРҮҮ ЖӨНӨТПӨЙТ.
+    This is now the **SILENT DATA COLLECTOR**.
+    It runs every hour, finds newly solved problems for "today",
+    and stores them in the `posted_today` and `problem_info` tables.
+    IT DOES NOT SEND ANY NOTIFICATIONS.
     """
     logging.info("Job: Running DATA COLLECTION check...")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # 1. Бардык группаларды алуу
+    # 1. Fetch all groups
     cursor.execute("SELECT chat_id FROM groups")
     groups = cursor.fetchall()
     if not groups:
@@ -445,7 +445,7 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # 2. "Бүгүн" жана "кечээ" (UTC) датасын аныктоо
+    # 2. Determine "today" and "yesterday" (UTC) dates
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     today_utc_str = now_utc.strftime('%Y-%m-%d')
     yesterday_utc_str = (now_utc - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
@@ -471,7 +471,7 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
                     continue
 
                 for sub in submissions:
-                    # 3. Тапшырма "бүгүн" чечилгенин текшерүү
+                    # 3. Check if the problem was solved "today"
                     timestamp = int(sub['timestamp'])
                     submit_time_utc = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
                     submit_date_str = submit_time_utc.strftime('%Y-%m-%d')
@@ -481,33 +481,33 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
 
                     problem_slug = sub['titleSlug']
 
-                    # 4. "Бүгүн" үчүн бул маселе мурда катталганын текшерүү
+                    # 4. Check if this problem was already recorded for "today"
                     cursor.execute(
                         "SELECT 1 FROM posted_today WHERE chat_id = ? AND leetcode_username = ? AND problem_slug = ? AND date_posted = ?",
                         (chat_id, username, problem_slug, submit_date_str)
                     )
                     if cursor.fetchone():
-                        # Мурда катталган, кийинкиге өтүү
+                        # Already recorded, skip
                         continue
 
-                    # 5. Эгер жаңы болсо, кэшти толтуруу жана маалымат базасына каттоо
+                    # 5. If new, populate cache and record in the database
                     logging.info(f"Job: Found new submission for {username} (group {chat_id}): {problem_slug}")
 
-                    # Маселенин маалыматын (аталышы/кыйынчылыгы) алып, кэшти толтуруу
-                    # Бул кийинчерээк отчет үчүн керек
+                    # Fetch problem info (title/difficulty) to fill the cache
+                    # This is needed later for reporting
                     get_or_fetch_problem_info(cursor, problem_slug)
 
-                    # "posted_today" таблицасына каттоо
+                    # Record in the "posted_today" table
                     cursor.execute(
                         "INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?, ?)",
                         (chat_id, username, problem_slug, submit_date_str)
                     )
 
-                conn.commit() # Ар бир колдонуучудан кийин сактоо
+                conn.commit() # Save after each user
 
             except Exception as e:
                 logging.error(f"Job: Error during data collection for {username} (group {chat_id}): {e}")
-                conn.rollback() # Ката болсо, бул колдонуучунун өзгөрүүлөрүн артка кайтаруу
+                conn.rollback() # On error, roll back this user's changes
                 continue
 
     conn.close()
@@ -521,15 +521,15 @@ async def generate_and_send_report(
     update_streaks: bool = True
 ) -> bool:
     """
-    Берилген UTC датасы үчүн отчет түзүп, группага жөнөтөт.
-    update_streaks=False болсо streak эсептери өзгөртүлбөйт.
-    Маалымат табылса 'True', табылбаса 'False' кайтарат.
+    Builds a report for the given UTC date and sends it to the group.
+    If update_streaks=False, streak counts are not changed.
+    Returns 'True' if data was found, otherwise 'False'.
     """
     logging.info(f"Job: Generating report for date: {date_str}")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # 1. Бардык колдонуучуларды алуу (тизме жана тартип үчүн керек)
+    # 1. Fetch all users (needed for list and ordering)
     cursor.execute(
         "SELECT leetcode_username, display_name FROM group_tracked_users WHERE chat_id = ? ORDER BY display_name",
         (chat_id,)
@@ -541,7 +541,7 @@ async def generate_and_send_report(
         conn.close()
         return False
 
-    # 3. Берилген дата ('date_str') боюнча бардык маалыматты DB'ден алуу
+    # 3. Fetch all data for the given date ('date_str') from the DB
     query = """
     SELECT
         gtu.leetcode_username,
@@ -564,7 +564,7 @@ async def generate_and_send_report(
         conn.close()
         return False
 
-    # 4. Билдирүүнү топтоо
+    # 4. Build the message
     report_data = {}
     for username, display_name in tracked_users:
         report_data[username] = {
@@ -604,7 +604,7 @@ async def generate_and_send_report(
         else:
             sleepers.append((display_with_streak, streak_value))
 
-    # title_prefix жана date_str параметрлерин колдонуу
+    # Use the title_prefix and date_str parameters
     message_parts = []
     if solved_users:
         solved_users.sort(key=lambda item: item[2], reverse=True)
@@ -626,7 +626,7 @@ async def generate_and_send_report(
 
     message = "\n".join(message_parts)
 
-    # 5. Билдирүүнү жөнөтүү
+    # 5. Send the message
     try:
         conn.commit()
         await context.bot.send_message(
@@ -637,7 +637,7 @@ async def generate_and_send_report(
         )
         logging.info(f"Job: Successfully sent report for {date_str} to group {chat_id}")
         conn.close()
-        return True  # Маалымат жөнөтүлдү
+        return True  # Message sent
     except Exception as e:
         logging.error(f"Job: Failed to send report to group {chat_id}: {e}")
         conn.close()
@@ -645,12 +645,12 @@ async def generate_and_send_report(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     """
-    Бул АВТОМАТТЫК ОТЧЕТ ЖӨНӨТҮҮЧҮ (UTC 15:00).
-    Кечээки күн үчүн отчет даярдоону баштайт.
+    This is the AUTOMATIC REPORT SENDER (UTC 15:00).
+    It starts preparing the report for yesterday.
     """
     logging.info("Job: Running DAILY REPORT sender...")
 
-    # Кечээки датаны эсептөө
+    # Calculate yesterday's date
     yesterday_utc = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
     yesterday_utc_str = yesterday_utc.strftime('%Y-%m-%d')
 
@@ -660,14 +660,14 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     groups = cursor.fetchall()
     conn.close()
 
-    # Негизги функцияны "Кечээки" деп чакыруу
+    # Call the main function with "Yesterday"
     for (chat_id,) in groups:
         await generate_and_send_report(context, chat_id, yesterday_utc_str, "Кечээки")
 
 async def clear_daily_log(context: ContextTypes.DEFAULT_TYPE):
     """
-    Күн сайын иштеп, эски маалыматтарды тазалайт.
-    Мисалы, 2 күндөн эски маалыматтарды.
+    Runs daily and cleans up old data.
+    For example, data older than 2 days.
     """
     logging.info("Job: Running daily cleanup...")
     conn = sqlite3.connect(DB_NAME)
@@ -691,31 +691,31 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 def get_or_fetch_problem_info(db_cursor, problem_slug: str) -> (str, str):
     """
-    Маалымат базасынан маселенин маалыматын (кыйынчылык, аталышы) текшерет.
-    Табылбаса, API'ден алып, маалымат базасына сактайт.
+    Checks the database for problem info (difficulty, title).
+    If not found, fetches it from the API and stores it.
     """
-    # 1. Кэшти текшерүү
+    # 1. Check the cache
     db_cursor.execute("SELECT difficulty, title FROM problem_info WHERE problem_slug = ?", (problem_slug,))
     result = db_cursor.fetchone()
 
     if result:
         return (result[0], result[1])  # (difficulty, title)
 
-    # 2. Кэште жок, API'ден алуу
+    # 2. Not in cache, fetch from API
     logging.info(f"Cache miss. Fetching info for {problem_slug} from API...")
     difficulty, title = fetch_problem_difficulty(problem_slug)
 
     if difficulty and title:
-        # 3. Кэшке (маалымат базасына) сактоо
+        # 3. Save to cache (database)
         try:
             db_cursor.execute("INSERT INTO problem_info (problem_slug, difficulty, title) VALUES (?, ?, ?)",
                               (problem_slug, difficulty, title))
-            # conn.commit() бул жерде чакырылбайт, чакырган функция өзү commit кылат
+            # conn.commit() is not called here; the caller commits
         except sqlite3.IntegrityError:
-            pass # Эгер башка процесс кошуп койсо
+            pass # If another process already inserted it
         return (difficulty, title)
     else:
-        return ("N/A", problem_slug) # Эгер API иштебесе
+        return ("N/A", problem_slug) # If the API fails
 
 def format_streak_label(streak_value: int) -> str:
     """Formats streak label for display."""
@@ -822,7 +822,7 @@ def get_or_fetch_difficulty(db_cursor, problem_slug: str) -> str:
 # --- Main Bot Function ---
 
 def main():
-    """Ботту иштетет жана жумуштарды пландаштырат."""
+    """Starts the bot and schedules jobs."""
     if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("!!! ERROR: Please replace 'YOUR_BOT_TOKEN_HERE' with your actual bot token.")
         return
@@ -834,14 +834,14 @@ def main():
     # --- JOB SCHEDULING ---
     job_queue = application.job_queue
 
-    # 1. Маалымат чогултуучу жумуш (ар саат)
+    # 1. Data collection job (hourly)
     job_queue.run_repeating(check_for_updates, interval=CHECK_INTERVAL_SECONDS, first=10)
 
-    # 2. Отчет жөнөтүүчү жумуш (күн сайын UTC 7:00)
+    # 2. Report sender job (daily at UTC 7:00)
     report_time = datetime.time(hour=7, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(send_daily_report, time=report_time)
 
-    # 3. Тазалоочу жумуш (күн сайын UTC 9:00, отчеттон кийин)
+    # 3. Cleanup job (daily at UTC 9:00, after the report)
     cleanup_time = datetime.time(hour=9, minute=0, tzinfo=datetime.timezone.utc)
     job_queue.run_daily(clear_daily_log, time=cleanup_time)
 
@@ -849,7 +849,7 @@ def main():
     logging.info(f"Scheduled daily report for {report_time} UTC.")
     logging.info(f"Scheduled daily cleanup for {cleanup_time} UTC.")
 
-    # Команда handler'лерин каттоо (эч өзгөрүү жок)
+    # Register command handlers (no changes)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("register_group", register_group_command))
