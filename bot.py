@@ -105,8 +105,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ **Group Setup:**\n"
         "  `/register_group` - (Run in your group) Sets this group as the one for posting updates.\n"
         "  `/send_report` - Manually post YESTERDAY's report.\n"
-        "  `/send_today` - Manually post TODAY's report (so far)."  # <-- ЖАҢЫ КОШУЛДУ
+        "  `/send_today` - Manually post TODAY's report (so far).\n\n"
+        "🛠️ **Admin Tools:**\n"
+        "  `/set_streak <username> <streak_number>` - (Admins only) Set a tracked user's streak."
     )
+
+
+async def user_is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Returns True if command sender is a group admin or owner."""
+    chat_member = await context.bot.get_chat_member(
+        chat_id=update.message.chat_id,
+        user_id=update.message.from_user.id
+    )
+    return chat_member.status in ("administrator", "creator")
+
 
 async def register_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /register_group command. Stores the chat_id."""
@@ -328,6 +340,89 @@ async def manual_send_today_command(update: Update, context: ContextTypes.DEFAUL
     except Exception as e:
         logging.error(f"Manual today report trigger failed: {e}")
         await update.message.reply_text(f"Отчет даярдоодо ката кетти: {e}")
+
+
+async def set_streak_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /set_streak <username> <streak_number> command."""
+    if update.message.chat.type == "private":
+        await update.message.reply_text("Please use `/set_streak` inside your group, not in a private chat.")
+        return
+
+    try:
+        is_admin = await user_is_group_admin(update, context)
+    except Exception as e:
+        await update.message.reply_text(f"Failed to verify admin permissions: {e}")
+        logging.error(f"Error checking admin permissions: {e}")
+        return
+
+    if not is_admin:
+        await update.message.reply_text("Only group admins can use `/set_streak`.")
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: `/set_streak <leetcode_username> <streak_number>`\n"
+            "Example: `/set_streak neal_wu 7`"
+        )
+        return
+
+    username_to_set = context.args[0].strip()
+
+    try:
+        streak_value = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid streak number. It must be an integer.\n"
+            "Usage: `/set_streak <leetcode_username> <streak_number>`"
+        )
+        return
+
+    today_utc_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM groups WHERE chat_id = ?", (update.message.chat_id,))
+            if not cursor.fetchone():
+                await update.message.reply_text("This group is not registered yet. Run `/register_group` first.")
+                return
+
+            cursor.execute(
+                "SELECT display_name FROM group_tracked_users WHERE chat_id = ? AND leetcode_username = ?",
+                (update.message.chat_id, username_to_set)
+            )
+            tracked_user = cursor.fetchone()
+
+            if not tracked_user:
+                await update.message.reply_text(
+                    f"User '{username_to_set}' is not tracked in this group. Use `/list` to see tracked users."
+                )
+                return
+
+            cursor.execute(
+                """
+                INSERT INTO user_streaks (leetcode_username, last_date, streak_value)
+                VALUES (?, ?, ?)
+                ON CONFLICT(leetcode_username)
+                DO UPDATE SET last_date = excluded.last_date, streak_value = excluded.streak_value
+                """,
+                (username_to_set, today_utc_str, streak_value)
+            )
+            conn.commit()
+
+        await update.message.reply_text(
+            f"✅ Streak for '{tracked_user[0]}' ({username_to_set}) is set to {streak_value}."
+        )
+        logging.info(
+            "Set streak for user '%s' to %s in chat %s by %s",
+            username_to_set,
+            streak_value,
+            update.message.chat_id,
+            update.message.from_user.username
+        )
+    except Exception as e:
+        await update.message.reply_text(f"An error occurred while setting streak: {e}")
+        logging.error(f"Error setting streak for user '{username_to_set}': {e}")
 
 # --- Core Automation Logic ---
 
@@ -762,6 +857,7 @@ def main():
     application.add_handler(CommandHandler("list", list_users_command))
     application.add_handler(CommandHandler("send_report", manual_send_report_command))
     application.add_handler(CommandHandler("send_today", manual_send_today_command))
+    application.add_handler(CommandHandler("set_streak", set_streak_command))
     application.add_error_handler(error_handler)
 
     logging.basicConfig(
