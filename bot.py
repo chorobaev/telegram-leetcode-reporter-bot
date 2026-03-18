@@ -445,8 +445,10 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # 2. "Бүгүн" (UTC) датасын аныктоо
-    today_utc_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    # 2. "Бүгүн" жана "кечээ" (UTC) датасын аныктоо
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today_utc_str = now_utc.strftime('%Y-%m-%d')
+    yesterday_utc_str = (now_utc - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
 
     for (chat_id,) in groups:
         cursor.execute(
@@ -474,8 +476,7 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
                     submit_time_utc = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
                     submit_date_str = submit_time_utc.strftime('%Y-%m-%d')
 
-                    if submit_date_str != today_utc_str:
-                        # Эски тапшырма, бул колдонуучу үчүн токтотуу
+                    if submit_date_str != today_utc_str and submit_date_str != yesterday_utc_str:
                         break
 
                     problem_slug = sub['titleSlug']
@@ -483,7 +484,7 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
                     # 4. "Бүгүн" үчүн бул маселе мурда катталганын текшерүү
                     cursor.execute(
                         "SELECT 1 FROM posted_today WHERE chat_id = ? AND leetcode_username = ? AND problem_slug = ? AND date_posted = ?",
-                        (chat_id, username, problem_slug, today_utc_str)
+                        (chat_id, username, problem_slug, submit_date_str)
                     )
                     if cursor.fetchone():
                         # Мурда катталган, кийинкиге өтүү
@@ -499,7 +500,7 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE):
                     # "posted_today" таблицасына каттоо
                     cursor.execute(
                         "INSERT INTO posted_today (chat_id, leetcode_username, problem_slug, date_posted) VALUES (?, ?, ?, ?)",
-                        (chat_id, username, problem_slug, today_utc_str)
+                        (chat_id, username, problem_slug, submit_date_str)
                     )
 
                 conn.commit() # Ар бир колдонуучудан кийин сактоо

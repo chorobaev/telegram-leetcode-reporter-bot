@@ -433,7 +433,7 @@ class TestCommandHandlers(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
 
 
 class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCase):
-    async def test_check_for_updates_inserts_only_new_todays_submissions(self):
+    async def test_check_for_updates_inserts_today_and_yesterday_but_not_older(self):
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute("INSERT INTO groups (chat_id) VALUES (?)", (1001,))
@@ -443,33 +443,94 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
             )
             conn.commit()
 
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        frozen_now = datetime.datetime(2026, 3, 15, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        today_str = "2026-03-15"
+        yesterday_str = "2026-03-14"
         submissions = [
-            {"timestamp": str(int(now_utc.timestamp())), "titleSlug": "two-sum"},
+            {"timestamp": str(int(frozen_now.timestamp())), "titleSlug": "two-sum"},
             {
                 "timestamp": str(
-                    int((now_utc - datetime.timedelta(days=1)).timestamp())
+                    int((frozen_now - datetime.timedelta(days=1)).timestamp())
+                ),
+                "titleSlug": "yesterday-problem",
+            },
+            {
+                "timestamp": str(
+                    int((frozen_now - datetime.timedelta(days=2)).timestamp())
                 ),
                 "titleSlug": "old-problem",
             },
         ]
 
-        with patch("bot.fetch_recent_submissions", return_value=submissions), patch(
-            "bot.get_or_fetch_problem_info", return_value=("Easy", "Two Sum")
-        ) as problem_info_mock:
+        real_datetime = datetime.datetime
+
+        class FrozenDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now
+
+        with patch("bot.datetime.datetime", FrozenDatetime), \
+             patch("bot.fetch_recent_submissions", return_value=submissions), \
+             patch("bot.get_or_fetch_problem_info", return_value=("Easy", "Two Sum")) as problem_info_mock:
             await bot.check_for_updates(SimpleNamespace())
             await bot.check_for_updates(SimpleNamespace())
 
         with self.connect() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM posted_today")
-            total_rows = cursor.fetchone()[0]
-            cursor.execute("SELECT problem_slug FROM posted_today")
-            slug_rows = [row[0] for row in cursor.fetchall()]
+            cursor.execute(
+                "SELECT problem_slug, date_posted FROM posted_today ORDER BY date_posted DESC"
+            )
+            rows = cursor.fetchall()
 
-        self.assertEqual(total_rows, 1)
-        self.assertEqual(slug_rows, ["two-sum"])
-        self.assertEqual(problem_info_mock.call_count, 1)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ("two-sum", today_str))
+        self.assertEqual(rows[1], ("yesterday-problem", yesterday_str))
+        self.assertEqual(problem_info_mock.call_count, 2)
+
+    async def test_check_for_updates_collects_yesterdays_late_submissions(self):
+        """A problem solved at 23:30 UTC yesterday must be collected on a post-midnight run."""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO groups (chat_id) VALUES (?)", (2001,))
+            cursor.execute(
+                "INSERT INTO group_tracked_users (chat_id, leetcode_username, display_name) VALUES (?, ?, ?)",
+                (2001, "bob", "Bob"),
+            )
+            conn.commit()
+
+        frozen_now = datetime.datetime(2026, 3, 15, 0, 30, 0, tzinfo=datetime.timezone.utc)
+        late_yesterday = datetime.datetime(2026, 3, 14, 23, 30, 0, tzinfo=datetime.timezone.utc)
+        yesterday_str = "2026-03-14"
+
+        submissions = [
+            {
+                "timestamp": str(int(late_yesterday.timestamp())),
+                "titleSlug": "late-night-problem",
+            },
+        ]
+
+        real_datetime = datetime.datetime
+
+        class FrozenDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now
+
+        with patch("bot.datetime.datetime", FrozenDatetime), \
+             patch("bot.fetch_recent_submissions", return_value=submissions), \
+             patch("bot.get_or_fetch_problem_info", return_value=("Medium", "Late Night Problem")):
+            await bot.check_for_updates(SimpleNamespace())
+
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT problem_slug, date_posted FROM posted_today WHERE chat_id = ?",
+                (2001,),
+            )
+            rows = cursor.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0], ("late-night-problem", yesterday_str))
 
     async def test_generate_report_uses_global_streak_signal_across_groups(self):
         report_date = "2026-02-10"
