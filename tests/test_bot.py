@@ -563,7 +563,10 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
         sent_text = send_message_mock.await_args.kwargs["text"]
         self.assertIn("Уктап калгандар", sent_text)
         self.assertNotIn("Азаматтар", sent_text)
-        self.assertIn("<b>Alice (🔥 +1)</b>", sent_text)
+        self.assertIn(
+            "<b><a href='https://leetcode.com/alice/'>Alice</a> (🔥 +1)</b>",
+            sent_text,
+        )
 
         with self.connect() as conn:
             cursor = conn.cursor()
@@ -644,7 +647,10 @@ class TestCollectorAndReports(DatabaseTestMixin, unittest.IsolatedAsyncioTestCas
         send_message_mock.assert_awaited_once()
         sent_text = send_message_mock.await_args.kwargs["text"]
         self.assertIn("Азаматтар", sent_text)
-        self.assertIn("<b>Bob (🔥 +1)</b>", sent_text)
+        self.assertIn(
+            "<b><a href='https://leetcode.com/bob/'>Bob</a> (🔥 +1)</b>",
+            sent_text,
+        )
         self.assertIn(
             "🟢 <a href='https://leetcode.com/problems/two-sum/'>Two Sum</a>",
             sent_text,

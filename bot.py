@@ -597,7 +597,8 @@ async def generate_and_send_report(
         else:
             streak_value, show_streak = get_current_user_streak(cursor, username)
         streak_label = format_streak_label(streak_value) if show_streak else ""
-        display_with_streak = f"{display_name}{streak_label}"
+        display_link = f"<a href='https://leetcode.com/{username}/'>{display_name}</a>"
+        display_with_streak = f"{display_link}{streak_label}"
 
         if solved_in_group:
             solved_users.append((display_with_streak, submissions, streak_value))
