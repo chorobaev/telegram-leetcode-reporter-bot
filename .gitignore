@@ -1,3 +1,4 @@
 /.idea/
 /leetcode_bot.db
 /venv/
+__pycache__/
